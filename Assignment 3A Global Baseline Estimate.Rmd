@@ -1,0 +1,127 @@
+---
+title: "Assignment 3A – Global Baseline Estimate Recommendation System"
+author: "Zineb Tamnat"
+date: "2026-02-14"
+output: html_document
+---
+
+# Overview
+
+In this assignment, I implement a Global Baseline Estimate recommendation system using movie rating data stored in my PostgreSQL database. The goal is to predict how a user would rate a movie they have not seen by using the overall average rating, the user’s rating tendency, and the movie’s rating tendency.
+
+Based on the provided spreadsheet, the formula used is:
+
+Global Baseline Estimate = Mean Movie Rating + Movie Bias + User Bias
+
+# Load Packages
+
+```{r}
+library(DBI)
+library(RPostgres)
+library(dplyr)
+library(tidyr)
+```
+
+# I connected to my database.
+
+```{r}
+con <- dbConnect(
+  RPostgres::Postgres(),
+  host = Sys.getenv("PGHOST"),
+  port = Sys.getenv("PGPORT"),
+  dbname = Sys.getenv("PGDATABASE"),
+  user = Sys.getenv("PGUSER"),
+  password = Sys.getenv("PGPASSWORD")
+)
+dbListTables(con)
+```
+
+# This is my work from the previous assignment.
+
+```{r}
+ratings_long <- dbGetQuery(con, "
+SELECT u.name, m.title, r.rating
+FROM ratings r
+JOIN users u  ON u.user_id = r.user_id
+JOIN movies m ON m.movie_id = r.movie_id
+ORDER BY u.name, m.title;
+")
+
+ratings_long
+```
+
+```{r}
+users  <- dbGetQuery(con, "SELECT name FROM users ORDER BY name;")
+movies <- dbGetQuery(con, "SELECT title FROM movies ORDER BY title;")
+
+ratings_complete <- expand_grid(
+  name = users$name,
+  title = movies$title
+) %>%
+  left_join(ratings_long, by = c("name", "title"))
+
+ratings_complete
+```
+
+# Step 1: Calculate Mean Movie Rating
+
+This is the overall average rating across all movies and users.
+
+```{r}
+mean_movie_rating <- mean(ratings_complete$rating, na.rm = TRUE)
+mean_movie_rating
+```
+
+# Step 2: Calculate User Bias (User Avg − Mean Movie Rating)
+
+This shows how each user's ratings compare to the overall average.
+
+```{r}
+user_bias <- ratings_complete %>%
+  group_by(name) %>%
+  summarise(user_avg = mean(rating, na.rm = TRUE)) %>%
+  mutate(user_bias = user_avg - mean_movie_rating)
+
+user_bias
+```
+
+# Step 3: Calculate Movie Bias (Movie Avg − Mean Movie Rating)
+
+This shows how each movie performs relative to the overall average.
+
+```{r}
+movie_bias <- ratings_complete %>%
+  group_by(title) %>%
+  summarise(movie_avg = mean(rating, na.rm = TRUE)) %>%
+  mutate(movie_bias = movie_avg - mean_movie_rating)
+
+movie_bias
+```
+
+# Step 4: Apply Global Baseline Estimate Formula
+
+Global Baseline Estimate = Mean Movie Rating + Movie Bias + User Bias
+
+```{r}
+predictions <- ratings_complete %>%
+  left_join(user_bias, by = "name") %>%
+  left_join(movie_bias, by = "title") %>%
+  mutate(predicted_rating = mean_movie_rating + movie_bias + user_bias)
+
+predictions
+```
+
+# Step 5: Generate Movie Recommendations
+
+For each user, the system recommends the highest predicted movie that they have not rated yet.
+
+```{r}
+recommendations <- predictions %>%
+  filter(is.na(rating)) %>%
+  group_by(name) %>%
+  slice_max(predicted_rating, n = 1, with_ties = FALSE) %>%
+  select(name, recommended_movie = title, predicted_rating) %>%
+  arrange(name)
+
+recommendations
+```
